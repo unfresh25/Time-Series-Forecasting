@@ -20,9 +20,9 @@
   {
     "objectID": "index.html",
     "href": "index.html",
-    "title": "Ts_q",
+    "title": "Series de tiempo",
     "section": "",
-    "text": "This is a Quarto website.\nTo learn more about Quarto websites visit https://quarto.org/docs/websites.",
+    "text": "Un proceso estocástico es una colección o familia de variables aleatorias \\(\\{X_{t}\\}_{t\\in I}\\) ordenadas según el subíndice \\(t\\) que en general se suele identificar con el tiempo. Llamamos trayectoria del proceso a una realización del proceso estocástico. Si \\(I\\) es discreto, el proceso es en tiempo discreto. Si \\(I\\) es continuo, el proceso es en tiempo continuo.",
     "crumbs": [
       "Introducción"
     ]
