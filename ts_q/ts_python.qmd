@@ -1,0 +1,949 @@
+---
+title: "Predicciones de Series de Tiempo en Python"
+subtitle: "Visualización Científica"
+description: |
+ Un proceso estocástico es una colección o familia de variables aleatorias $\{X_{t}\}_{t\in I}$ ordenadas según el subíndice $t$ que en general se suele identificar con el tiempo. Llamamos trayectoria del proceso a una realización del proceso estocástico. Si $I$ es discreto, el proceso es en tiempo discreto. Si $I$ es continuo, el proceso es en tiempo continuo.
+---
+
+# Librerías
+
+Para este proyecto trabajaremos con las siguientes librerías:
+
+* Pandas
+* Plotly
+* Matplotlib
+* Seaborn
+* Yfinance
+* Numpy
+* Statsmodel
+
+Pueden instalarse utilizando el siguiente comando desde la terminal: `pip install pandas yfinance plotly...`, o bien, mediante el archivo [requirements.txt](https://github.com/unfresh25/f1-dashboard) utilizando `pip install -r requirements.txt` en la terminal.
+
+Una vez instaladas, podemos importarlas en nuestro entorno de trabajo de la siguiente manera:
+
+``` {python libraries}
+import os
+import pickle
+
+import pandas as pd
+import numpy as np
+from numpy import log
+
+import plotly.graph_objects as go
+import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+import plotly.io as pio
+pio.renderers.default = "notebook"
+
+import yfinance as yf
+
+from datetime import datetime, timedelta
+
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_predict
+from statsmodels.tsa.arima.model import ARIMA, ARIMAResults
+from sklearn.metrics import r2_score
+
+import pmdarima as pm
+
+import warnings
+warnings.filterwarnings("ignore")
+```
+
+# 1. Obtener datos 
+
+Considere la serie de tiempo asociada con los futuros de la criptomoneda **Bitcoin** desde que comenzó a comercializarse hasta la fecha del día de hoy. Utilice la **API** de `Yahoo Finance` para obtener esta serie de tiempo.
+
+Para obtener estos datos, debemos tener en cuenta el nombre del ticker para la criptomenda **Bitcoin** que es `BTC-USD`, mediante la libreria `yfinance`.
+
+``` {python}
+ticker: str = 'BTC-USD'
+
+stock: yf.Ticker = yf.Ticker(ticker)
+stock_data: pd.DataFrame = stock.history(period='max')
+
+stock_data = stock_data.reset_index()
+stock_data.head()
+```
+
+# 2. Modelo ARIMA usando rolling forecasting
+
+Repita **TODOS** los pasos indicados en esta sección para encontrar modelos `ARIMA` para predecir el precio de `Bitcoin` con los siguientes horizontes: `7, 14, 21 y 28 días`. Utilizar siempre predicciones usando `rolling` con ventana de predicción continua de un día. Cualquier cantidad de pasos extra para enriquecer su análisis predictivo serán aceptados siempre y cuando sean acordes con lo que indica la teoría de análisis de series de tiempo.
+
+``` {python}
+#| fig-cap: 'Serie de tiempo del Bitcoin'
+
+sns.lineplot(data=stock_data, x=stock_data.Date, y=stock_data.Close);
+```
+
+``` {python}
+#| fig-cap: 'Candlestick del stock BTC-USD.'
+
+fig: go.Figure = go.Figure(data=[
+    go.Candlestick(
+        x = stock_data.Date,
+        open = stock_data.Open, 
+        high = stock_data.High,
+        low = stock_data.Low, 
+        close = stock_data.Close
+    )
+])
+
+fig.update_layout(
+    title="Bitcoin (BTC-USD)",
+    xaxis_title="Day",
+    yaxis_title="BTC-USD",
+    font=dict(
+        family="Courier New, monospace",
+        size=12,
+        color="RebeccaPurple"
+    ),
+)
+fig.update_layout(xaxis_rangeslider_visible=False)
+fig
+```
+
+<br>
+
+Con estas gráficas se observan dos momentos significativos: un pico inicial alrededor de 2017 y otro más pronunciado que comienza cerca de 2020 y sigue ascendiendo hasta el final del período mostrado. Entre estos dos picos, hay una caída notable después del primer pico y una estabilización antes del segundo aumento.
+
+## Series estacionarias
+
+Para determinar si nuestra serie de tiempo es estacionaria, recurrimos al conocido test estadístico de `Dickey-Fuller`. Este test plantea las siguientes hipótesis:
+
+$$
+\begin{gather}
+    \text{H}_0: \text{La serie de tiempo no es estacionaria}\\
+    \text{v.s.}\\
+    \text{H}_1: \text{La serie de tiempo es estacionaria}
+\end{gather}
+$$
+
+El objetivo es no rechazar la hipótesis nula. Por lo tanto, evaluamos el resultado del test mediante el siguiente código:
+
+``` {python}
+result: tuple = adfuller(stock_data.Close)
+print('ADF Statistic: %f' % result[0])
+print('p-value: %f' % result[1])
+```
+
+Dado que `(p-valor > 0.05)`, no rechazamos la hipótesis nula, lo que indica que la serie de tiempo es estacionaria. Esta conclusión se refuerza al analizar gráficamente la autocorrelación, lo que también nos permite entender el **orden de integración** necesario para transformar la serie de **no estacionaria** a **estacionaria**.
+
+## Autocorrelación
+
+Examinemos estas gráficas de autocorrelación para las diferentes diferenciaciones de nuestra serie de tiempo, utilizando un número de retrasos (`lags`) de 240:
+
+``` {python}
+#| fig-cap: 'Autocorrelación de la serie de tiempo original, diferenciada 1 vez y 2 veces.'
+
+plt.rcParams.update({'figure.figsize': (9, 9)})
+
+fig: plt.Figure
+axes: np.ndarray
+
+fig, axes = plt.subplots(3, 2, sharex=True)
+axes[0, 0].plot(stock_data.Close); axes[0, 0].set_title('Original Series')
+plot_acf(stock_data.Close, ax=axes[0, 1], lags = 240);
+
+axes[1, 0].plot(stock_data.Close.diff()); axes[1, 0].set_title('1st Order Differencing')
+plot_acf(stock_data.Close.diff().dropna(), ax=axes[1, 1], lags = 240);
+
+axes[2, 0].plot(stock_data.Close.diff().diff()); axes[2, 0].set_title('2nd Order Differencing')
+plot_acf(stock_data.Close.diff().diff().dropna(), ax=axes[2, 1], lags = 240);
+```
+
+<br> 
+
+Se observa que la gráfica de autocorrelación de la serie de tiempo original muestra un decaimiento con tendencia lineal o geométrica, lo que indica una autocorrelación típica de una serie no estacionaria. Además, observamos un fenómeno de **sobrediferenciación** en la gráfica de la segunda diferenciación, donde la autocorrelación ingresa rápidamente a la zona negativa.
+
+## Criterios AIC, BIC y HQIC
+
+Los criterios de información de Akaike (`AIC`), Bayesiano (`BIC`) y de Hannan-Quinn (`HQIC`) utilizan el método de estimación de máxima verosimilitud (`log-verosimilitud`) de los modelos como medida de ajuste. Estas medidas buscan valores bajos para indicar un mejor ajuste del modelo a los datos, empleando las siguientes fórmulas:
+
+$$
+\begin{align*}
+    \text{AIC} &= 2k - 2 \ln(L) \\
+    \text{BIC} &= k \ln(n) - 2 \ln(L) \\
+    \text{HQIC} &= 2k \ln(\ln(n)) - 2 \ln(L).
+\end{align*}
+$$
+
+donde $k$ representa el `número de parámetros` en el modelo estadístico, $L$ el valor de la función de máxima verosimilitud del modelo estimado, y $n$ el tamaño de la muestra. 
+
+Es importante destacar que, aunque aumentar el `número de parámetros` puede aumentar el valor de la verosimilitud, esto puede conducir a problemas de **sobreajuste** en el modelo. Para abordar este problema, los criterios mencionados anteriormente introducen un `término de penalización` basado en el número de parámetros. El término de penalización es mayor en el `BIC` que en el `AIC` para muestras superiores a 7. Por su parte, el `HQIC` busca equilibrar esta penalización, situándose entre el `AIC` y el `BIC`. La elección del criterio a utilizar dependerá del objetivo principal de la investigación.
+
+## División de datos para entrenamiento del modelo
+
+Ahora procederemos a definir nuestro conjunto de datos para entrenar el modelo. Definiremos inicialmente nuestro conjunto de prueba con un horizonte de 28 días pues, este abarcará también los casos en que queramos realizar pronósticos con horizontes de 7, 14 y 21 días. 
+
+``` {python}
+n: int = len(stock_data.Close)
+n_test: int = 28
+
+train_size: int = n - n_test
+
+train: pd.DataFrame = stock_data.Close[:train_size]
+dates_train: pd.DataFrame = stock_data.Date[:train_size]
+
+test28: pd.DataFrame = stock_data.Close[train_size:train_size + n_test]
+dates_test28: pd.DataFrame = stock_data.Date[train_size:train_size + n_test]
+```
+
+## Modelo ARIMA
+
+Utilizaremos el modelo `ARIMA` a través de la biblioteca `statsmodels` para explorar diferentes combinaciones de órdenes $p, d, q$. Utilizaremos el método de máxima verosimilitud (`method = 'mle'`) para calcular la verosimilitud exacta mediante el **filtro de Kalman**.
+
+Comencemos creando una función que tome un dataframe de entrenamiento y devuelva el mejor conjunto de órdenes $p, d, q$ asociados al criterio `AIC` de bondad de ajuste, junto con los valores de **AIC** y **BIC**, y el mejor modelo encontrado. 
+
+Recordemos que, el valor $d$ corresponde al número de diferenciaciones que podemos realizar a nuestra serie de tiempo. Teniendo en cuenta las gráficas de autocorrelación y la prueba de `Dickey-Fuller` realizada, podemos saber que el máximo valor que puede tomar $d$ será de 1 diferenciación a la serie de tiempo.
+
+``` {python}
+def arima_model(train: pd.DataFrame, criteria: str) -> tuple:
+    best_order: tuple = None
+    best_mdl: ARIMAResults = None
+
+    pq_rng: range = range(2)
+    d_rng: range = range(2)
+
+
+    print(f'Minimizing {criteria.upper} to find best model')
+    print(f'Max value for p, d, q = {max(pq_rng)}')
+
+    if criteria == 'aic':
+        best_aic: float = np.inf
+
+        for p in pq_rng:
+            for d in d_rng:
+                for q in pq_rng:
+                    try:
+                        tmp_mdl: ARIMAResults = ARIMA(train, order = (p, d, q)).fit()
+                        tmp_aic: float = tmp_mdl.aic
+                        if tmp_aic < best_aic:
+                            best_aic = tmp_aic
+                            best_order = (p, d, q)
+                            best_mdl = tmp_mdl
+
+                            print(f'ARIMA{best_order}: AIC = {best_aic}')
+                    except:
+                        continue 
+        return best_order, best_aic, best_mdl
+    elif criteria == 'bic':
+        best_bic: float = np.inf
+
+        for p in pq_rng:
+            for d in d_rng:
+                for q in pq_rng:
+                    try:
+                        tmp_mdl: ARIMAResults = ARIMA(train, order = (p, d, q)).fit()
+                        tmp_bic: float = tmp_mdl.bic
+                        if tmp_bic < best_bic:
+                            best_bic = tmp_bic
+                            best_order = (p, d, q)
+                            best_mdl = tmp_mdl
+
+                            print(f'ARIMA{best_order}: BIC = {best_bic}')
+                    except:
+                        continue 
+        return best_order, best_bic, best_mdl
+    else:
+        best_hqic: float = np.inf
+
+        for p in pq_rng:
+            for d in d_rng:
+                for q in pq_rng:
+                    try:
+                        tmp_mdl: ARIMAResults = ARIMA(train, order = (p, d, q)).fit()
+                        tmp_hqic: float = tmp_mdl.hqic
+                        if tmp_hqic < best_hqic:
+                            best_hqic = tmp_hqic
+                            best_order = (p, d, q)
+                            best_mdl = tmp_mdl
+
+                            print(f'ARIMA{best_order}: HQIC = {best_hqic}')
+                    except:
+                        continue 
+        return best_order, best_hqic, best_mdl
+```
+
+A continuación, evaluemos nuestro conjunto de entrenamiento para obtener el mejor `orden`, `AIC` y el mejor `modelo ARIMA`. Antes de proceder, conviene crear una función que busque el modelo en una ruta especificada y, en caso de existir, lo cargue, o en su defecto, lo guarde si no se encuentra disponible en esa ubicación.
+
+``` {python }
+def get_model(filename: str, train: pd.DataFrame, criteria: str) -> tuple:
+    if os.path.isfile(filename):
+        print("Loading model from file...")
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
+    else:
+        print("Model file not found. Running ARIMA model...")
+        order, c, model = arima_model(train, criteria)
+
+        model_data = (order, c, model)
+        with open(filename, 'wb') as f:
+            pickle.dump(model_data, f)
+
+        return order, c, model
+```
+
+``` {python}
+order: tuple
+aic: float
+model: ARIMAResults
+
+order, aic, model = get_model("arima_model_aic.pkl", train, 'aic')
+```
+
+``` {python}
+#| echo: false
+print(f'Best model: ARIMA{order} | Best AIC: {aic}')
+```
+
+## Auto ARIMA
+
+También tenemos la opción de obtener el modelo `ARIMA` utilizando una función llamada `auto_arima`. Sin embargo, esta función genera un simple random walk $x_{t} = x_{t - 1} + \omega_{t}$, que predice puramente basado en el valor temporal anterior $t - 1$.
+
+``` {python}
+auto_arima: pm.arima.auto_arima = pm.arima.auto_arima(
+    train, start_p=1, start_q=1,
+    test='adf',
+    max_p=3, max_q=3,
+    m=1,
+    d=None,
+    seasonal=False,
+    start_P=0, 
+    D=0, 
+    trace=True,
+    error_action='ignore',  
+    suppress_warnings=True, 
+    stepwise=True
+)
+```
+
+Con esto, podemos notar que el valor del `AIC` obtenido es más bajo en el modelo obtenido mediante la función `arima_model` que en el modelo generado por la función `auto_arima`. Esta discrepancia se debe a que la función `auto_arima` se basa únicamente en el dato anterior para realizar predicciones, lo cual no se ajusta adecuadamente al análisis que deseamos realizar. La naturaleza cambiante de los mercados financieros, especialmente en el caso de activos como **Bitcoin**, que son altamente volátiles, requiere un enfoque más sofisticado que considere la evolución histórica para comprender mejor sus comportamientos.
+
+## Modelo ajustado
+
+Teniendo en cuenta lo anterior, para la solución de este problema, consideraremos los mejores órdenes $p, d, q$ según el criterio de **Akaike**. Estos serán usados como argumento en nuestro modelo `ARIMA` junto con nuestro conjunto de entrenamiento para obtener el modelo ajustado de interés que utilizaremos para predecir valores futuros mediante el método `rolling`. 
+
+``` {python}
+def fitted_model(train: pd.DataFrame, order: tuple) -> list:
+    model_arima: ARIMA = ARIMA(train, order=order)
+    model_fit: ARIMAResults = model_arima.fit()
+
+    fig: plt.Figure
+    ax: np.ndarray
+
+    plt.rcParams.update({'figure.figsize': (9,9)})
+
+    fig, ax = plt.subplots();
+    plot_predict(model_fit, 1, ax=ax);
+    plt.show();
+
+    return model_arima, model_fit
+
+model_arima: ARIMA
+model_fit: ARIMAResults
+
+model_arima, model_fit = fitted_model(train, order)
+```
+
+
+**AÑADIR CONCLUSIÓN DE LAS GRÁFICAS**
+
+## Pronóstico Continuo (Rolling Forecast)
+
+Ahora procederemos a realizar pronósticos utilizando el método de pronóstico continuo, también conocido como `rolling forecasting`. Este método utiliza datos históricos para predecir cifras futuras de forma continua a lo largo de un período de tiempo. Si se utiliza eficazmente, este método proporciona previsiones continuas que ayudan a identificar deficiencias de rendimiento, acortar ciclos de planificación y tomar decisiones más informadas para mejorar los resultados. En nuestro caso, implementaremos este enfoque de  `rolling forecasting` utilizando horizontes de 7, 14, 21 y 28 días. 
+
+``` {python}
+def arima_rolling(history: list, test: list, best_order: tuple) -> list:
+    predictions: list = []
+
+    for t in range(len(test)):
+        model: ARIMA = ARIMA(history, order=best_order)
+        model_fit: ARIMAResults = model.fit()
+        output: tuple = model_fit.forecast()
+        yhat: float = output[0]
+        predictions.append(yhat)
+        obs: float = test[t]
+        history.append(obs)
+        print('predicted=%f, expected=%f' % (yhat, obs))
+
+    return predictions
+
+train_list: list = train.tolist()
+
+print('ARIMA Rolling - Horizonte de 7 días.')
+test7: pd.DataFrame = stock_data.Close[train_size:train_size + 7]
+dates_test7: pd.DataFrame = stock_data.Date[train_size:train_size + 7]
+
+test7: list = test7.tolist()
+yhat7: list  = arima_rolling(train_list, test7, order)
+
+print('\nARIMA Rolling - Horizonte de 14 días.')
+test14: pd.DataFrame = stock_data.Close[train_size:train_size + 14]
+dates_test14: pd.DataFrame = stock_data.Date[train_size:train_size + 14]
+
+test14: list = test14.tolist()
+yhat14: list  = arima_rolling(train_list, test14, order)
+
+print('\nARIMA Rolling - Horizonte de 21 días.')
+test21: pd.DataFrame = stock_data.Close[train_size:train_size + 21]
+dates_test21: pd.DataFrame = stock_data.Date[train_size:train_size + 21]
+
+test21: list = test21.tolist()
+yhat21: list  = arima_rolling(train_list, test21, order)
+
+print('\nARIMA Rolling - Horizonte de 28 días')
+test28: list = test28.tolist()
+yhat28: list = arima_rolling(train_list, test28, order)
+```
+
+``` {python}
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test7, y=yhat7, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 7 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test14, y=yhat14, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 14 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test21, y=yhat21, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 21 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test28, y=yhat28, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 28 días")
+plt.show()
+```
+
+# 3. Modelo ARIMA sin usar rolling
+
+Repita el paso 2 ahora sin utilizar `rolling`. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción **7, 14, 21 y 28 días**.
+
+Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Es decir, este conjunto en nuestra nueva función ya no variará sino que será estático para cada una de las predicciones realizadas.
+
+``` {python}
+def arima_not_rolling(history: list, test: list, best_order: tuple) -> list:
+    predictions: list = []
+
+    for t in range(len(test)):
+        model: ARIMA = ARIMA(history, order=best_order)
+        model_fit = model.fit()
+        output: tuple = model_fit.forecast()
+        yhat: float = output[0]
+        predictions.append(yhat)
+        obs: float = test[t]
+        print('predicted=%f, expected=%f' % (yhat, obs))
+
+    return predictions
+
+print('ARIMA sin Rolling - Horizonte de 7 días.')
+yhat7_nor: list  = arima_rolling(train_list, test7, order)
+
+print('\nARIMA sin Rolling - Horizonte de 14 días.')
+yhat14_nor: list  = arima_rolling(train_list, test14, order)
+
+print('\nARIMA sin Rolling - Horizonte de 21 días.')
+yhat21_nor: list  = arima_rolling(train_list, test21, order)
+
+print('\nARIMA sin Rolling - Horizonte de 28 días')
+yhat28_nor: list = arima_rolling(train_list, test28, order)
+```
+
+``` {python}
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test7, y=yhat7_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 7 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test14, y=yhat14_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 14 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test21, y=yhat21_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 21 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test28, y=yhat28_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 28 días sin usar rolling")
+plt.show()
+```
+
+# 4. Comparación entre modelos
+
+Realice tablas de error para los ítems 1 y 2, utilizando las métricas: `MAPE`, `MAE`, `RMSE`, `MSE`, `R2`. Además, agregue el gráfico de correlación entre la observación real y su predicción en el test, $\text{Corr}(y_{t}, \tilde{y}_{t})$
+
+Para obtener las métricas de los modelos obtenidos crearemos la siguiente función: 
+``` {python}
+def forecast_accuracy(forecast: np.ndarray, actual: np.ndarray, str_name: str) -> pd.DataFrame:
+    mape: float = np.mean(np.abs(forecast - actual) / np.abs(actual))
+    mae: float = np.mean(np.abs(forecast - actual))
+    rmse: float = np.mean((forecast - actual) ** 2) ** 0.5
+    mse: float = np.mean((forecast - actual) ** 2)
+    r2: float = r2_score(forecast, actual)
+    
+    df_acc: pd.DataFrame = pd.DataFrame({
+        'MAE': [mae],
+        'MSE': [mse],
+        'MAPE': [mape],
+        'RMSE': [rmse],
+        'R2': [r2]
+    }, index=[str_name])
+    
+    return df_acc
+```
+
+Obtengamos inicialmente las métricas para el modelo usando `rolling`
+
+``` {python}
+accuracy7: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7), "7 días")
+accuracy14: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14), "14 días")
+accuracy21: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21), "21 días")
+accuracy28: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28), "28 días")
+```
+
+Ahora, obtengamos las métricas para el modelo obtenido sin usar `rolling`
+
+``` {python}
+accuracy7_nor: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7_nor), "7 días no rolling")
+accuracy14_nor: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14_nor), "14 días no rolling")
+accuracy21_nor: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21_nor), "21 días no rolling")
+accuracy28_nor: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28_nor), "28 días no rolling")
+
+accuracy: pd.DataFrame = pd.concat([accuracy7, accuracy14, accuracy21, accuracy28, accuracy7_nor, accuracy14_nor, accuracy21_nor, accuracy28_nor])
+
+accuracy
+```
+
+Las métricas obtenidas nos permiten interpretar los resultados de la siguiente forma:
+
+* **MAE (Error Absoluto Medio)**: Esta medida representa la media de las diferencias absolutas entre las predicciones y los valores reales. Por ejemplo, un MAE promedio de $1827.465$ indica un error absoluto promedio de $1827.465$ en las predicciones.
+* **MSE (Error Cuadrático Medio)**: Es la media de los cuadrados de las diferencias entre las predicciones y los valores reales. Valores altos como $4877469$ indican una dispersión significativa entre las predicciones y los valores reales.
+* **MAPE (Error Porcentual Absoluto Medio)**: Esta medida indica el promedio de los errores porcentuales absolutos en relación con los valores reales. Un MAPE promedio de $0.0266$ sugiere que las predicciones tienen un error porcentual promedio del $2.6%$.
+* **RMSE (Error Cuadrático Medio de la Raíz)**: Es la raíz cuadrada del `MSE` y proporciona una medida de la dispersión de los errores en la misma unidad que los datos originales. Un RMSE promedio de $2267.960$ indica que las predicciones se desvían aproximadamente $2267.960$ unidades de los valores reales.
+* **$\text{R}^2$ (Coeficiente de Determinación)**: Es una medida de qué tan bien el modelo se ajusta a los datos reales. Puede interpretarse como la proporción de la varianza total de los datos que es explicada por el modelo. Un valor de $\text{R}^2$ inferior a $0.5$ (50%) indica un ajuste deficiente del modelo. Además, para los horizontes de predicción mayores a 7 días, los coeficientes de determinación no superan el $0.15$ (15%), lo que sugiere un ajuste insuficiente para períodos de predicción más largos.
+
+``` {python}
+plt.rcParams.update({'figure.figsize': (9, 12)})
+
+fig: plt.Figure
+axes: np.ndarray
+
+fig, axes = plt.subplots(4)
+
+sns.scatterplot(x=test7, y=yhat7, ax=axes[0], color='#5a189a', label='Real vs Estimado')
+axes[0].plot(test7, test7, color='#c77dff', label='Correlación')
+axes[0].set_title('Horizonte 7 días', fontsize=12)
+
+sns.scatterplot(x=test14, y=yhat14, ax=axes[1], color='#5a189a', label='Real vs Estimado')
+axes[1].plot(test14, test14, color='#c77dff', label='Correlación')
+axes[1].set_title('Horizonte 14 días', fontsize=12)
+
+sns.scatterplot(x=test21, y=yhat21, ax=axes[2], color='#5a189a', label='Real vs Estimado')
+axes[2].plot(test21, test21, color='#c77dff', label='Correlación')
+axes[2].set_title('Horizonte 21 días', fontsize=12)
+
+sns.scatterplot(x=test28, y=yhat28, ax=axes[3], color='#5a189a', label='Real vs Estimado')
+axes[3].plot(test28, test28, color='#c77dff', label='Correlación')
+axes[3].set_title('Horizonte 28 días', fontsize=12)
+```
+
+# 5. Creiterio BIC y HQIC
+
+Repita el análisis desarrollado en los pasos anteriores, considerando ahora el criterio de **inferencia Bayesiana** (`BIC`) y el criterio de **información de Hannan–Quinn** (`HQIC`) para encontrar el mejor modelo ARIMA y, compare los `errores` con aquellos obtenidos con el criterio de **Akaike**.
+
+Al igual que hicimos para el criterio **Akaike**, usaremos las funciones `get_model` y `arima_model` que definimos inicialmente para obtener los modelos. En este caso usaremos los criterios correspondientes a lo que queramos hallar
+
+## Criterio BIC
+
+``` {python}
+order: tuple
+bic: float
+model: ARIMAResults
+
+order, bic, model = get_model("arima_model_bic.pkl", train, 'bic')
+```
+
+``` {python}
+#| echo: false
+print(f'Best model: ARIMA{order} | Best BIC: {bic}')
+```
+
+### Modelo ajustado
+
+Teniendo en cuenta lo anterior, para la solución de este problema, consideraremos los mejores órdenes $p, d, q$ según el criterio de **inferencia Bayesiana**. Estos serán usados como argumento en nuestro modelo `ARIMA` junto con nuestro conjunto de entrenamiento para obtener el modelo ajustado de interés que utilizaremos para predecir valores futuros mediante el método `rolling`. 
+
+``` {python}
+model_arima: ARIMA
+model_fit: ARIMAResults
+
+model_arima, model_fit = fitted_model(train, order)
+```
+
+
+**AÑADIR CONCLUSIÓN DE LAS GRÁFICAS**
+
+### Pronóstico Continuo (Rolling Forecast)
+
+Ahora procederemos a realizar pronósticos utilizando el método de pronóstico continuo, también conocido como `rolling forecasting`. Este método utiliza datos históricos para predecir cifras futuras de forma continua a lo largo de un período de tiempo. Si se utiliza eficazmente, este método proporciona previsiones continuas que ayudan a identificar deficiencias de rendimiento, acortar ciclos de planificación y tomar decisiones más informadas para mejorar los resultados. En nuestro caso, implementaremos este enfoque de  `rolling forecasting` utilizando horizontes de 7, 14, 21 y 28 días. 
+
+``` {python}
+print('ARIMA Rolling - Horizonte de 7 días.')
+yhat7: list  = arima_rolling(train_list, test7, order)
+
+print('\nARIMA Rolling - Horizonte de 14 días.')
+yhat14: list  = arima_rolling(train_list, test14, order)
+
+print('\nARIMA Rolling - Horizonte de 21 días.')
+yhat21: list  = arima_rolling(train_list, test21, order)
+
+print('\nARIMA Rolling - Horizonte de 28 días')
+yhat28: list = arima_rolling(train_list, test28, order)
+```
+
+``` {python}
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test7, y=yhat7, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 7 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test14, y=yhat14, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 14 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test21, y=yhat21, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 21 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test28, y=yhat28, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 28 días")
+plt.show()
+```
+
+### Modelo ARIMA sin usar rolling
+
+Repita el paso 2 ahora sin utilizar `rolling`. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción **7, 14, 21 y 28 días**.
+
+Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Es decir, este conjunto en nuestra nueva función ya no variará sino que será estático para cada una de las predicciones realizadas.
+
+``` {python}
+print('ARIMA sin Rolling - Horizonte de 7 días.')
+yhat7_nor: list  = arima_rolling(train_list, test7, order)
+
+print('\nARIMA sin Rolling - Horizonte de 14 días.')
+yhat14_nor: list  = arima_rolling(train_list, test14, order)
+
+print('\nARIMA sin Rolling - Horizonte de 21 días.')
+yhat21_nor: list  = arima_rolling(train_list, test21, order)
+
+print('\nARIMA sin Rolling - Horizonte de 28 días')
+yhat28_nor: list = arima_rolling(train_list, test28, order)
+```
+
+``` {python}
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test7, y=yhat7_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 7 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test14, y=yhat14_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 14 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test21, y=yhat21_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 21 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test28, y=yhat28_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 28 días sin usar rolling")
+plt.show()
+```
+
+### Comparación entre modelos
+Para obtener las métricas de los modelos generados usaremos la función `forest_accuracy` creada anteriormente. 
+
+Obtengamos inicialmente las métricas para el modelo usando `rolling`
+
+``` {python}
+accuracy7: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7), "7 días")
+accuracy14: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14), "14 días")
+accuracy21: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21), "21 días")
+accuracy28: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28), "28 días")
+```
+
+Ahora, obtengamos las métricas para el modelo obtenido sin usar `rolling`
+
+``` {python}
+accuracy7_nor: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7_nor), "7 días no rolling")
+accuracy14_nor: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14_nor), "14 días no rolling")
+accuracy21_nor: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21_nor), "21 días no rolling")
+accuracy28_nor: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28_nor), "28 días no rolling")
+
+accuracy: pd.DataFrame = pd.concat([accuracy7, accuracy14, accuracy21, accuracy28, accuracy7_nor, accuracy14_nor, accuracy21_nor, accuracy28_nor])
+
+accuracy
+```
+
+Las métricas obtenidas nos permiten interpretar los resultados de la siguiente forma:
+
+* **MAE (Error Absoluto Medio)**: Esta medida representa la media de las diferencias absolutas entre las predicciones y los valores reales. Por ejemplo, un MAE promedio de $1827.465$ indica un error absoluto promedio de $1827.465$ en las predicciones.
+* **MSE (Error Cuadrático Medio)**: Es la media de los cuadrados de las diferencias entre las predicciones y los valores reales. Valores altos como $4877469$ indican una dispersión significativa entre las predicciones y los valores reales.
+* **MAPE (Error Porcentual Absoluto Medio)**: Esta medida indica el promedio de los errores porcentuales absolutos en relación con los valores reales. Un MAPE promedio de $0.0266$ sugiere que las predicciones tienen un error porcentual promedio del $2.6%$.
+* **RMSE (Error Cuadrático Medio de la Raíz)**: Es la raíz cuadrada del `MSE` y proporciona una medida de la dispersión de los errores en la misma unidad que los datos originales. Un RMSE promedio de $2267.960$ indica que las predicciones se desvían aproximadamente $2267.960$ unidades de los valores reales.
+* **$\text{R}^2$ (Coeficiente de Determinación)**: Es una medida de qué tan bien el modelo se ajusta a los datos reales. Puede interpretarse como la proporción de la varianza total de los datos que es explicada por el modelo. Un valor de $\text{R}^2$ inferior a $0.5$ (50%) indica un ajuste deficiente del modelo. Además, para los horizontes de predicción mayores a 7 días, los coeficientes de determinación no superan el $0.15$ (15%), lo que sugiere un ajuste insuficiente para períodos de predicción más largos.
+
+``` {python}
+plt.rcParams.update({'figure.figsize': (9, 12)})
+
+fig: plt.Figure
+axes: np.ndarray
+
+fig, axes = plt.subplots(4)
+
+sns.scatterplot(x=test7, y=yhat7, ax=axes[0], color='#5a189a', label='Real vs Estimado')
+axes[0].plot(test7, test7, color='#c77dff', label='Correlación')
+axes[0].set_title('Horizonte 7 días', fontsize=12)
+
+sns.scatterplot(x=test14, y=yhat14, ax=axes[1], color='#5a189a', label='Real vs Estimado')
+axes[1].plot(test14, test14, color='#c77dff', label='Correlación')
+axes[1].set_title('Horizonte 14 días', fontsize=12)
+
+sns.scatterplot(x=test21, y=yhat21, ax=axes[2], color='#5a189a', label='Real vs Estimado')
+axes[2].plot(test21, test21, color='#c77dff', label='Correlación')
+axes[2].set_title('Horizonte 21 días', fontsize=12)
+
+sns.scatterplot(x=test28, y=yhat28, ax=axes[3], color='#5a189a', label='Real vs Estimado')
+axes[3].plot(test28, test28, color='#c77dff', label='Correlación')
+axes[3].set_title('Horizonte 28 días', fontsize=12)
+```
+
+
+## Criterio HQIC
+
+``` {python}
+order: tuple
+hqic: float
+model: ARIMAResults
+
+order, hqic, model = get_model("arima_model_hqic.pkl", train, 'hqic')
+```
+
+``` {python}
+#| echo: false
+print(f'Best model: ARIMA{order} | Best HQIC: {hqic}')
+```
+
+### Modelo ajustado
+
+Teniendo en cuenta lo anterior, para la solución de este problema, consideraremos los mejores órdenes $p, d, q$ según el criterio de **inferencia Bayesiana**. Estos serán usados como argumento en nuestro modelo `ARIMA` junto con nuestro conjunto de entrenamiento para obtener el modelo ajustado de interés que utilizaremos para predecir valores futuros mediante el método `rolling`. 
+
+``` {python}
+model_arima: ARIMA
+model_fit: ARIMAResults
+
+model_arima, model_fit = fitted_model(train, order)
+```
+
+**AÑADIR CONCLUSIÓN DE LAS GRÁFICAS**
+
+### Pronóstico Continuo (Rolling Forecast)
+
+Ahora procederemos a realizar pronósticos utilizando el método de pronóstico continuo, también conocido como `rolling forecasting`. Este método utiliza datos históricos para predecir cifras futuras de forma continua a lo largo de un período de tiempo. Si se utiliza eficazmente, este método proporciona previsiones continuas que ayudan a identificar deficiencias de rendimiento, acortar ciclos de planificación y tomar decisiones más informadas para mejorar los resultados. En nuestro caso, implementaremos este enfoque de  `rolling forecasting` utilizando horizontes de 7, 14, 21 y 28 días. 
+
+``` {python}
+print('ARIMA Rolling - Horizonte de 7 días.')
+yhat7: list  = arima_rolling(train_list, test7, order)
+
+print('\nARIMA Rolling - Horizonte de 14 días.')
+yhat14: list  = arima_rolling(train_list, test14, order)
+
+print('\nARIMA Rolling - Horizonte de 21 días.')
+yhat21: list  = arima_rolling(train_list, test21, order)
+
+print('\nARIMA Rolling - Horizonte de 28 días')
+yhat28: list = arima_rolling(train_list, test28, order)
+```
+
+``` {python}
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test7, y=yhat7, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 7 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test14, y=yhat14, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 14 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test21, y=yhat21, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 21 días")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test28, y=yhat28, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 28 días")
+plt.show()
+```
+
+### Modelo ARIMA sin usar rolling
+
+Repita el paso 2 ahora sin utilizar `rolling`. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción **7, 14, 21 y 28 días**.
+
+Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Es decir, este conjunto en nuestra nueva función ya no variará sino que será estático para cada una de las predicciones realizadas.
+
+``` {python}
+print('ARIMA sin Rolling - Horizonte de 7 días.')
+yhat7_nor: list  = arima_rolling(train_list, test7, order)
+
+print('\nARIMA sin Rolling - Horizonte de 14 días.')
+yhat14_nor: list  = arima_rolling(train_list, test14, order)
+
+print('\nARIMA sin Rolling - Horizonte de 21 días.')
+yhat21_nor: list  = arima_rolling(train_list, test21, order)
+
+print('\nARIMA sin Rolling - Horizonte de 28 días')
+yhat28_nor: list = arima_rolling(train_list, test28, order)
+```
+
+``` {python}
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test7, y=yhat7_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 7 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test14, y=yhat14_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 14 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test21, y=yhat21_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 21 días sin usar rolling")
+plt.show()
+
+ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
+sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
+sns.lineplot(x=dates_test28, y=yhat28_nor, label="Forecast", color='#c77dff')
+
+plt.title("Horizonte de 28 días sin usar rolling")
+plt.show()
+```
+
+### Comparación entre modelos
+Para obtener las métricas de los modelos generados usaremos la función `forest_accuracy` creada anteriormente. 
+
+Obtengamos inicialmente las métricas para el modelo usando `rolling`
+
+``` {python}
+accuracy7: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7), "7 días")
+accuracy14: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14), "14 días")
+accuracy21: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21), "21 días")
+accuracy28: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28), "28 días")
+```
+
+Ahora, obtengamos las métricas para el modelo obtenido sin usar `rolling`
+
+``` {python}
+accuracy7_nor: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7_nor), "7 días no rolling")
+accuracy14_nor: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14_nor), "14 días no rolling")
+accuracy21_nor: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21_nor), "21 días no rolling")
+accuracy28_nor: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28_nor), "28 días no rolling")
+
+accuracy: pd.DataFrame = pd.concat([accuracy7, accuracy14, accuracy21, accuracy28, accuracy7_nor, accuracy14_nor, accuracy21_nor, accuracy28_nor])
+
+accuracy
+```
+
+Las métricas obtenidas nos permiten interpretar los resultados de la siguiente forma:
+
+* **MAE (Error Absoluto Medio)**: Esta medida representa la media de las diferencias absolutas entre las predicciones y los valores reales. Por ejemplo, un MAE promedio de $1827.465$ indica un error absoluto promedio de $1827.465$ en las predicciones.
+* **MSE (Error Cuadrático Medio)**: Es la media de los cuadrados de las diferencias entre las predicciones y los valores reales. Valores altos como $4877469$ indican una dispersión significativa entre las predicciones y los valores reales.
+* **MAPE (Error Porcentual Absoluto Medio)**: Esta medida indica el promedio de los errores porcentuales absolutos en relación con los valores reales. Un MAPE promedio de $0.0266$ sugiere que las predicciones tienen un error porcentual promedio del $2.6%$.
+* **RMSE (Error Cuadrático Medio de la Raíz)**: Es la raíz cuadrada del `MSE` y proporciona una medida de la dispersión de los errores en la misma unidad que los datos originales. Un RMSE promedio de $2267.960$ indica que las predicciones se desvían aproximadamente $2267.960$ unidades de los valores reales.
+* **$\text{R}^2$ (Coeficiente de Determinación)**: Es una medida de qué tan bien el modelo se ajusta a los datos reales. Puede interpretarse como la proporción de la varianza total de los datos que es explicada por el modelo. Un valor de $\text{R}^2$ inferior a $0.5$ (50%) indica un ajuste deficiente del modelo. Además, para los horizontes de predicción mayores a 7 días, los coeficientes de determinación no superan el $0.15$ (15%), lo que sugiere un ajuste insuficiente para períodos de predicción más largos.
+
+``` {python}
+plt.rcParams.update({'figure.figsize': (9, 12)})
+
+fig: plt.Figure
+axes: np.ndarray
+
+fig, axes = plt.subplots(4)
+
+sns.scatterplot(x=test7, y=yhat7, ax=axes[0], color='#5a189a', label='Real vs Estimado')
+axes[0].plot(test7, test7, color='#c77dff', label='Correlación')
+axes[0].set_title('Horizonte 7 días', fontsize=12)
+
+sns.scatterplot(x=test14, y=yhat14, ax=axes[1], color='#5a189a', label='Real vs Estimado')
+axes[1].plot(test14, test14, color='#c77dff', label='Correlación')
+axes[1].set_title('Horizonte 14 días', fontsize=12)
+
+sns.scatterplot(x=test21, y=yhat21, ax=axes[2], color='#5a189a', label='Real vs Estimado')
+axes[2].plot(test21, test21, color='#c77dff', label='Correlación')
+axes[2].set_title('Horizonte 21 días', fontsize=12)
+
+sns.scatterplot(x=test28, y=yhat28, ax=axes[3], color='#5a189a', label='Real vs Estimado')
+axes[3].plot(test28, test28, color='#c77dff', label='Correlación')
+axes[3].set_title('Horizonte 28 días', fontsize=12)
+```
