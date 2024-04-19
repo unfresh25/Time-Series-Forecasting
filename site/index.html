@@ -22,7 +22,27 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
-</style>
+/* CSS for citations */
+div.csl-bib-body { }
+div.csl-entry {
+  clear: both;
+  margin-bottom: 0em;
+}
+.hanging-indent div.csl-entry {
+  margin-left:2em;
+  text-indent:-2em;
+}
+div.csl-left-margin {
+  min-width:2em;
+  float:left;
+}
+div.csl-right-inline {
+  margin-left:2em;
+  padding-left:1em;
+}
+div.csl-indent {
+  margin-left: 2em;
+}</style>
 
 
 <script src="site_libs/quarto-nav/quarto-nav.js"></script>
@@ -218,11 +238,25 @@ window.Quarto = {
 </header>
 
 
-<p>Un proceso estocástico es una colección o familia de variables aleatorias <span class="math inline">\(\{X_{t}\}_{t\in I}\)</span> ordenadas según el subíndice <span class="math inline">\(t\)</span> que en general se suele identificar con el tiempo. Llamamos trayectoria del proceso a una realización del proceso estocástico. Si <span class="math inline">\(I\)</span> es discreto, el proceso es en tiempo discreto. Si <span class="math inline">\(I\)</span> es continuo, el proceso es en tiempo continuo.</p>
+<p>Una serie temporal es una realización parcial de un proceso estocástico de parámetro tiempo discreto, donde los elementos de <span class="math inline">\(I\)</span> están ordenados y corresponden a instantes equidistantes del tiempo. Estos procesos estocásticos son colecciones o familias de variables aleatorias <span class="math inline">\(\{X_{t}\}_{t\in I}\)</span> ordenadas según el subíndice <span class="math inline">\(t\)</span> que en general se suele identificar con el tiempo. Llamamos trayectoria del proceso a una realización del proceso estocástico. Si <span class="math inline">\(I\)</span> es discreto, el proceso es en tiempo discreto. Si <span class="math inline">\(I\)</span> es continuo, el proceso es en tiempo continuo. Entre las series de tiempo, existen modelos estadísticos que definen el proceso de cualquier conjunto de hipótesis bien definidas sobre las propeidades estadísticas de dicho proceso estocástico.</p>
+<p>Uno de los modelos más utilizados a la hora de realizar pronósticos de series de tiempo es el modelo <code>ARIMA</code>. Estos modelos <code>ARIMA</code> (Autorregresivos Integrados de Media Móvil) aproximan los valores futuros de una serie temporal como una función lineal de observaciones pasadas y términos de ruido blanco. Una serie de tiempo <span class="math inline">\(y_t\)</span> se llama un proceso de media móvil integrada autorregresiva (<code>ARIMA</code>) de órdenes <span class="math inline">\(p, d, q\)</span>, denotado ARIMA(<span class="math inline">\(p, d, q\)</span>) si su diferencia <span class="math inline">\(d\)</span> da lugar a un proceso estacionario ARMA(<span class="math inline">\(p, q\)</span>). Por lo tanto, un ARIMA(<span class="math inline">\(p, d, q\)</span>) puede escribirse como</p>
+<p><span class="math display">\[
+    \Phi(B)(1 - B)^{d} y_{t} = \delta + \Theta(B) \varepsilon_{t}
+\]</span></p>
+<p>donde</p>
+<p><span class="math display">\[
+    \Phi(B) = 1 - \sum_{i = 1}^{p} \phi_{i} B^{i} \quad \text{y} \quad \Theta(B) = 1 - \sum_{i = 1}^{q} \theta_{i} B^{i},
+\]</span></p>
+<p>son los términos del operador back-shit en los AR(<span class="math inline">\(p\)</span>) y MA(<span class="math inline">\(q\)</span>) definidos como <span class="math inline">\(\Phi(B) y_{t} = \delta + \varepsilon_{t}\)</span> y <span class="math inline">\(y_{t} = \mu + \Theta(B) \varepsilon_{t}\)</span> con <span class="math inline">\(\delta = \mu - \phi \mu\)</span>, donde <span class="math inline">\(\mu\)</span> es la media y <span class="math inline">\(\varepsilon_{t}\)</span> el ruido blanco con <span class="math inline">\(E(\varepsilon_t) = 0\)</span> <span class="citation" data-cites="rubio2024">(<a href="#ref-rubio2024" role="doc-biblioref">Rubio 2024</a>)</span>.</p>
 
 
 
-</main> <!-- /main -->
+
+<div id="quarto-appendix" class="default"><section class="quarto-appendix-contents" role="doc-bibliography" id="quarto-bibliography"><h2 class="anchored quarto-appendix-heading">Referencias</h2><div id="refs" class="references csl-bib-body hanging-indent" data-entry-spacing="0" role="list">
+<div id="ref-rubio2024" class="csl-entry" role="listitem">
+Rubio, Lihki. 2024. <span>«Predicciones de series de tiempo con Python»</span>. 2024. <a href="https://lihkir.github.io/DataVizPythonRUninorte/predictive_model.html">https://lihkir.github.io/DataVizPythonRUninorte/predictive_model.html</a>.
+</div>
+</div></section></div></main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
 window.document.addEventListener("DOMContentLoaded", function (event) {
   const toggleBodyColorMode = (bsSheetEl) => {

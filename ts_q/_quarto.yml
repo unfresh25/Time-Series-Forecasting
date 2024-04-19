@@ -51,4 +51,6 @@ include-in-header:
       <meta name="msapplication-TileColor" content="#da532c">
       <meta name="theme-color" content="#ffffff">
 
+bibliography: references.bib
+
 jupyter: ts_env

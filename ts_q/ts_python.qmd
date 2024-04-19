@@ -17,7 +17,7 @@ Para este proyecto trabajaremos con las siguientes librerías:
 * Numpy
 * Statsmodel
 
-Pueden instalarse utilizando el siguiente comando desde la terminal: `pip install pandas yfinance plotly...`, o bien, mediante el archivo [requirements.txt](https://github.com/unfresh25/f1-dashboard) utilizando `pip install -r requirements.txt` en la terminal.
+Pueden instalarse utilizando el siguiente comando desde la terminal: `pip install pandas yfinance plotly...`, o bien, mediante el archivo [requirements.txt](https://github.com/unfresh25/Time-Series-Forecasting) utilizando `pip install -r requirements.txt` en la terminal.
 
 Una vez instaladas, podemos importarlas en nuestro entorno de trabajo de la siguiente manera:
 
@@ -31,22 +31,28 @@ from numpy import log
 
 import plotly.graph_objects as go
 import plotly.express as px
-import seaborn as sns
-import matplotlib.pyplot as plt
-
 import plotly.io as pio
-pio.renderers.default = "notebook"
+pio.renderers.default = "plotly_mimetype+notebook_connected+notebook"
 
+import seaborn as sns
+
+import matplotlib.pyplot as plt
 import yfinance as yf
 
 from datetime import datetime, timedelta
 
 from statsmodels.tsa.stattools import adfuller
+from statsmodels.stats.stattools import durbin_watson
 from statsmodels.graphics.tsaplots import plot_acf, plot_predict
 from statsmodels.tsa.arima.model import ARIMA, ARIMAResults
+
 from sklearn.metrics import r2_score
+from scipy.stats import shapiro
 
 import pmdarima as pm
+
+from functools import lru_cache
+import time
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -58,13 +64,19 @@ Considere la serie de tiempo asociada con los futuros de la criptomoneda **Bitco
 
 Para obtener estos datos, debemos tener en cuenta el nombre del ticker para la criptomenda **Bitcoin** que es `BTC-USD`, mediante la libreria `yfinance`.
 
-``` {python}
+``` {python get_data}
 ticker: str = 'BTC-USD'
 
 stock: yf.Ticker = yf.Ticker(ticker)
 stock_data: pd.DataFrame = stock.history(period='max')
 
 stock_data = stock_data.reset_index()
+```
+
+``` {python}
+#| echo: false
+stock_data = stock_data.iloc[:-2]
+
 stock_data.head()
 ```
 
@@ -72,15 +84,15 @@ stock_data.head()
 
 Repita **TODOS** los pasos indicados en esta sección para encontrar modelos `ARIMA` para predecir el precio de `Bitcoin` con los siguientes horizontes: `7, 14, 21 y 28 días`. Utilizar siempre predicciones usando `rolling` con ventana de predicción continua de un día. Cualquier cantidad de pasos extra para enriquecer su análisis predictivo serán aceptados siempre y cuando sean acordes con lo que indica la teoría de análisis de series de tiempo.
 
-``` {python}
+``` {python time_serie}
 #| fig-cap: 'Serie de tiempo del Bitcoin'
-
 sns.lineplot(data=stock_data, x=stock_data.Date, y=stock_data.Close);
 ```
 
-``` {python}
+``` {python candlestick}
 #| fig-cap: 'Candlestick del stock BTC-USD.'
-
+#| fig-cap-location: bottom
+pio.renderers.default = "notebook"
 fig: go.Figure = go.Figure(data=[
     go.Candlestick(
         x = stock_data.Date,
@@ -105,8 +117,6 @@ fig.update_layout(xaxis_rangeslider_visible=False)
 fig
 ```
 
-<br>
-
 Con estas gráficas se observan dos momentos significativos: un pico inicial alrededor de 2017 y otro más pronunciado que comienza cerca de 2020 y sigue ascendiendo hasta el final del período mostrado. Entre estos dos picos, hay una caída notable después del primer pico y una estabilización antes del segundo aumento.
 
 ## Series estacionarias
@@ -123,7 +133,7 @@ $$
 
 El objetivo es no rechazar la hipótesis nula. Por lo tanto, evaluamos el resultado del test mediante el siguiente código:
 
-``` {python}
+``` {python adfuller}
 result: tuple = adfuller(stock_data.Close)
 print('ADF Statistic: %f' % result[0])
 print('p-value: %f' % result[1])
@@ -135,7 +145,7 @@ Dado que `(p-valor > 0.05)`, no rechazamos la hipótesis nula, lo que indica que
 
 Examinemos estas gráficas de autocorrelación para las diferentes diferenciaciones de nuestra serie de tiempo, utilizando un número de retrasos (`lags`) de 240:
 
-``` {python}
+``` {python autocorrelation}
 #| fig-cap: 'Autocorrelación de la serie de tiempo original, diferenciada 1 vez y 2 veces.'
 
 plt.rcParams.update({'figure.figsize': (9, 9)})
@@ -153,8 +163,6 @@ plot_acf(stock_data.Close.diff().dropna(), ax=axes[1, 1], lags = 240);
 axes[2, 0].plot(stock_data.Close.diff().diff()); axes[2, 0].set_title('2nd Order Differencing')
 plot_acf(stock_data.Close.diff().diff().dropna(), ax=axes[2, 1], lags = 240);
 ```
-
-<br> 
 
 Se observa que la gráfica de autocorrelación de la serie de tiempo original muestra un decaimiento con tendencia lineal o geométrica, lo que indica una autocorrelación típica de una serie no estacionaria. Además, observamos un fenómeno de **sobrediferenciación** en la gráfica de la segunda diferenciación, donde la autocorrelación ingresa rápidamente a la zona negativa.
 
@@ -178,7 +186,7 @@ Es importante destacar que, aunque aumentar el `número de parámetros` puede au
 
 Ahora procederemos a definir nuestro conjunto de datos para entrenar el modelo. Definiremos inicialmente nuestro conjunto de prueba con un horizonte de 28 días pues, este abarcará también los casos en que queramos realizar pronósticos con horizontes de 7, 14 y 21 días. 
 
-``` {python}
+``` {python train_split}
 n: int = len(stock_data.Close)
 n_test: int = 28
 
@@ -199,24 +207,24 @@ Comencemos creando una función que tome un dataframe de entrenamiento y devuelv
 
 Recordemos que, el valor $d$ corresponde al número de diferenciaciones que podemos realizar a nuestra serie de tiempo. Teniendo en cuenta las gráficas de autocorrelación y la prueba de `Dickey-Fuller` realizada, podemos saber que el máximo valor que puede tomar $d$ será de 1 diferenciación a la serie de tiempo.
 
-``` {python}
+``` {python arima_model}
 def arima_model(train: pd.DataFrame, criteria: str) -> tuple:
     best_order: tuple = None
     best_mdl: ARIMAResults = None
 
-    pq_rng: range = range(2)
+    p_rng: range = range(2)
     d_rng: range = range(2)
+    q_rng: range = range(3)
 
 
-    print(f'Minimizing {criteria.upper} to find best model')
-    print(f'Max value for p, d, q = {max(pq_rng)}')
-
+    print(f'Minimizing {criteria.upper()} to find best model')
     if criteria == 'aic':
         best_aic: float = np.inf
 
-        for p in pq_rng:
+        for p in p_rng:
             for d in d_rng:
-                for q in pq_rng:
+                for q in q_rng:
+                    begin = time.time()
                     try:
                         tmp_mdl: ARIMAResults = ARIMA(train, order = (p, d, q)).fit()
                         tmp_aic: float = tmp_mdl.aic
@@ -224,17 +232,18 @@ def arima_model(train: pd.DataFrame, criteria: str) -> tuple:
                             best_aic = tmp_aic
                             best_order = (p, d, q)
                             best_mdl = tmp_mdl
-
-                            print(f'ARIMA{best_order}: AIC = {best_aic}')
+                            end = time.time()
+                            print(f'ARIMA{best_order}: AIC = {best_aic:.3f}, Time: {end - begin:.2f} sec')
                     except:
                         continue 
         return best_order, best_aic, best_mdl
     elif criteria == 'bic':
         best_bic: float = np.inf
 
-        for p in pq_rng:
+        for p in p_rng:
             for d in d_rng:
-                for q in pq_rng:
+                for q in q_rng:
+                    begin = time.time()
                     try:
                         tmp_mdl: ARIMAResults = ARIMA(train, order = (p, d, q)).fit()
                         tmp_bic: float = tmp_mdl.bic
@@ -242,17 +251,18 @@ def arima_model(train: pd.DataFrame, criteria: str) -> tuple:
                             best_bic = tmp_bic
                             best_order = (p, d, q)
                             best_mdl = tmp_mdl
-
-                            print(f'ARIMA{best_order}: BIC = {best_bic}')
+                            end = time.time()
+                            print(f'ARIMA{best_order}: BIC = {best_bic:.3f}, Time: {end - begin:.2f} sec')
                     except:
                         continue 
         return best_order, best_bic, best_mdl
     else:
         best_hqic: float = np.inf
 
-        for p in pq_rng:
+        for p in p_rng:
             for d in d_rng:
-                for q in pq_rng:
+                for q in q_rng:
+                    begin = time.time()
                     try:
                         tmp_mdl: ARIMAResults = ARIMA(train, order = (p, d, q)).fit()
                         tmp_hqic: float = tmp_mdl.hqic
@@ -260,8 +270,8 @@ def arima_model(train: pd.DataFrame, criteria: str) -> tuple:
                             best_hqic = tmp_hqic
                             best_order = (p, d, q)
                             best_mdl = tmp_mdl
-
-                            print(f'ARIMA{best_order}: HQIC = {best_hqic}')
+                            end = time.time()
+                            print(f'ARIMA{best_order}: HQIC = {best_hqic:.3f}, Time: {end - begin:.2f} sec')
                     except:
                         continue 
         return best_order, best_hqic, best_mdl
@@ -269,14 +279,12 @@ def arima_model(train: pd.DataFrame, criteria: str) -> tuple:
 
 A continuación, evaluemos nuestro conjunto de entrenamiento para obtener el mejor `orden`, `AIC` y el mejor `modelo ARIMA`. Antes de proceder, conviene crear una función que busque el modelo en una ruta especificada y, en caso de existir, lo cargue, o en su defecto, lo guarde si no se encuentra disponible en esa ubicación.
 
-``` {python }
+``` {python get_model}
 def get_model(filename: str, train: pd.DataFrame, criteria: str) -> tuple:
     if os.path.isfile(filename):
-        print("Loading model from file...")
         with open(filename, 'rb') as f:
             return pickle.load(f)
     else:
-        print("Model file not found. Running ARIMA model...")
         order, c, model = arima_model(train, criteria)
 
         model_data = (order, c, model)
@@ -287,6 +295,11 @@ def get_model(filename: str, train: pd.DataFrame, criteria: str) -> tuple:
 ```
 
 ``` {python}
+#| echo: false
+begin_t = time.time()
+```
+
+``` {python model_aic}
 order: tuple
 aic: float
 model: ARIMAResults
@@ -294,16 +307,18 @@ model: ARIMAResults
 order, aic, model = get_model("arima_model_aic.pkl", train, 'aic')
 ```
 
-``` {python}
+``` {python print_best_model_aic}
 #| echo: false
-print(f'Best model: ARIMA{order} | Best AIC: {aic}')
+end_t = time.time()
+print(f'Best model: ARIMA{order} | Best AIC: {aic:.3f}')
+print(f'Total fit time: {end_t - begin_t:.2f} sec')
 ```
 
 ## Auto ARIMA
 
 También tenemos la opción de obtener el modelo `ARIMA` utilizando una función llamada `auto_arima`. Sin embargo, esta función genera un simple random walk $x_{t} = x_{t - 1} + \omega_{t}$, que predice puramente basado en el valor temporal anterior $t - 1$.
 
-``` {python}
+``` {python autoarima}
 auto_arima: pm.arima.auto_arima = pm.arima.auto_arima(
     train, start_p=1, start_q=1,
     test='adf',
@@ -326,7 +341,7 @@ Con esto, podemos notar que el valor del `AIC` obtenido es más bajo en el model
 
 Teniendo en cuenta lo anterior, para la solución de este problema, consideraremos los mejores órdenes $p, d, q$ según el criterio de **Akaike**. Estos serán usados como argumento en nuestro modelo `ARIMA` junto con nuestro conjunto de entrenamiento para obtener el modelo ajustado de interés que utilizaremos para predecir valores futuros mediante el método `rolling`. 
 
-``` {python}
+``` {python fitted_model}
 def fitted_model(train: pd.DataFrame, order: tuple) -> list:
     model_arima: ARIMA = ARIMA(train, order=order)
     model_fit: ARIMAResults = model_arima.fit()
@@ -348,14 +363,13 @@ model_fit: ARIMAResults
 model_arima, model_fit = fitted_model(train, order)
 ```
 
+Después de obtener el modelo ajustado y visualizar la gráfica resultante, podemos observar que el rango del intervalo de confianza para las predicciones es estrecho. Esto sugiere que los pronósticos que estamos obteniendo podrían estar ajustándose correctamente a partir de los datos de entrenamiento.
 
-**AÑADIR CONCLUSIÓN DE LAS GRÁFICAS**
-
-## Pronóstico Continuo (Rolling Forecast)
+## Pronóstico continuo (Rolling Forecast)
 
 Ahora procederemos a realizar pronósticos utilizando el método de pronóstico continuo, también conocido como `rolling forecasting`. Este método utiliza datos históricos para predecir cifras futuras de forma continua a lo largo de un período de tiempo. Si se utiliza eficazmente, este método proporciona previsiones continuas que ayudan a identificar deficiencias de rendimiento, acortar ciclos de planificación y tomar decisiones más informadas para mejorar los resultados. En nuestro caso, implementaremos este enfoque de  `rolling forecasting` utilizando horizontes de 7, 14, 21 y 28 días. 
 
-``` {python}
+``` {python arima_rolling}
 def arima_rolling(history: list, test: list, best_order: tuple) -> list:
     predictions: list = []
 
@@ -399,7 +413,7 @@ test28: list = test28.tolist()
 yhat28: list = arima_rolling(train_list, test28, order)
 ```
 
-``` {python}
+``` {python arima_rolling_plots}
 ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
 sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
 sns.lineplot(x=dates_test7, y=yhat7, label="Forecast", color='#c77dff')
@@ -429,13 +443,126 @@ plt.title("Horizonte de 28 días")
 plt.show()
 ```
 
-# 3. Modelo ARIMA sin usar rolling
+<br>
+Observamos cómo los pronósticos se ajustan a las respuestas esperadas a medida que el "tiempo" transcurre. Esto se evidencia porque al inicio, los pronósticos están un poco alejados de la realidad, pero con el tiempo, la línea de pronóstico se ajusta más al comportamiento del conjunto de prueba. Este ajuste ocurre porque en cada predicción que realizamos, estamos tomando en cuenta el valor de prueba anterior como dato histórico. Esto permite que la serie de tiempo se adapte a los cambios que ocurren a lo largo de los días.
+
+## Análsis de residuales
+
+### Test de normalidad
+
+Realizar un test de normalidad es importante porque nos ayuda a determinar la distribución de nuestros datos. Con ello, podemos evaluar si nuestros datos se ajustan lo suficientemente bien a una `distribución normal` para utilizar métodos estadísticos paramétricos de manera adecuada. Si los datos no son normales, es posible que necesitemos aplicar métodos estadísticos no paramétricos o considerar transformaciones de datos para cumplir con los supuestos necesarios para nuestros análisis.
+
+Para esta prueba, utilizaremos el test de normalidad de `Shapiro-Wilks`, el cual sirve para "medir el grado de ajuste a una recta de las observaciones de la muestra representadas en un gráfico de probabilidad normal, de forma que se rechazará la hipótesis nula de normalidad cuando el ajuste sea malo, situación que se corresponde con valores pequeños del estadístico de contraste. Este contraste es el más adecuado cuando el tamaño de muestra es pequeño (no superior a 3000) y tampoco requiere que los parámetros de la distribución estén especificados" [@Gonzalez2006-yu]. El estadístico de prueba se calcula como:
+
+$$
+    W = \frac{\left(\sum_{i = 1}^n a_i x_{(i)}\right)^2}{\sum_{i = 1}^n \left(x_i - \bar{x}\right)^2},
+$$
+
+donde $x_{(i)}$ son los datos de la muestra en la posición $i$, $\bar{x}$ representa la media de los datos y $a_i$ se calcula de la siguiente manera:
+
+$$
+    \left(a_1, a_2, \dots, a_n\right) = \frac{m^\top V^{-1}}{\left(m^\top V^{-1} V^{-1} m\right)},
+$$
+
+siendo $m$ los valores medios del estadístico ordenado de distribuciones normales y $V$ la matriz varianzas-covarianzas de ese estadístico [@Shapiro1965-ee]. La prueba de hipótesis se plantea como:
+
+$$
+\begin{gather}
+    \text{H}_0: \text{Los datos siguen una distribución normal}\\
+    \text{v.s.}\\
+    \text{H}_1: \text{Los datos no siguen una distribución normal}
+\end{gather}
+$$
+
+Para no rechazar la hipótesis nula, el p-valor debe ser mayor que $0.05$ o el estadístico $W$ no debe ser demasiado pequeño.
+
+Ahora, para realizar esta prueba de normalidad de nuestros residuales, crearemos una función llamada normality que nos permitirá realizar estas pruebas a lo largo de este análisis.
+
+``` {python normality_test}
+def normality(model: ARIMAResults) -> None:
+    qq: Figure
+    stat: float
+    pvalue: float
+
+    qq = model.plot_diagnostics(figsize=(9,9))
+
+    stat, pvalue = shapiro(model.resid)
+
+    print('Shapiro-Wilks Test')
+    print('Alternative Hipothesis: Data is not distributed normally')
+    print(f'Statistic = {stat:.3f}')
+    print(f'P-Value = {pvalue}')
+    if(pvalue < 0.05):
+        print('Se rechaza la hipótesis nula, los residuales no siguen una distribución normal.')
+    else:
+        print('No se rechaza la hipótesis nula, los residuales siguen una distribución normal.')
+```
+
+Evualuemos nuestro modelo en la función creada
+
+``` {python normality_test_aic}
+normality(model)
+```
+
+### Test de Independencia
+
+El test de independencia es crucial en estadística para determinar si existe una asociación significativa entre variables en una población. Uno de los principales supuestos de los modelos es que no existe `autocorrelación` entre los residuales, es decir, son independendientes. La `autocorrelación` es la similitud de una `serie de tiempo en intervalos de tiempo sucesivos`. Puede dar lugar a subestimaciones del error estándar y hacer que piense que los predictores son significativos cuando no lo son.
+
+Una forma de determinar si se cumple este supuesto es realizar una prueba de `Durbin-Watson`, que se utiliza para detectar la presencia de `autocorrelación` en los `residuos`. La prueba de **Durbin-Watson** utiliza la siguiente prueba de hipótesis:
+
+$$
+\begin{gather}
+    \text{H}_0: \text{No existe correlación entre los residuales}\\
+    \text{v.s.}\\
+    \text{H}_1: \text{Los residuos están correlacionados}
+\end{gather}
+$$
+
+El estadístico de prueba para la prueba de Durbin-Watson, normalmente denotado $d$, se calcula de la siguiente manera:
+
+$$
+    d = \frac{\sum_{i = 1}^T \left(e_{t} - e_{t - 1}\right)^2}{\sum_{i = 1}^T e_t^2},
+$$
+
+donde $T$ es el número de observaciones y $e_t$ el t-ésimo residual del modelo. 
+
+El estadístico de prueba siempre varía de 0 a 4, donde:
+
+* $d = 2$, indica que no hay autocorrelación.
+* $d < 2$, indica que existe correlación serial positiva.
+* $d > 2$, indica que existe correlación serial negativa.
+
+En general, si d es menor que $1.5$ o mayor que $2.5$, existe un problema de autocorrelación potencialmente grave. De lo contrario, si $d$ está entre $1.5$ y $2.5$, es probable que la autocorrelación no sea motivo de preocupación [@bartels1981robustness].
+
+Ahora, para realizar esta prueba de independencia de nuestros residuales, crearemos una función llamada autocorrelation que nos permitirá realizar estas pruebas a lo largo de este análisis.
+
+``` {python autocorrelation_test}
+def autocorrelation(model: ARIMAResults) -> None: 
+    dw = durbin_watson(model.resid)
+
+    print('Durbin-Watson Test')
+    print('Alternative Hipothesis: Residuals are correlated')
+    print(f'Statistic d = {dw:.3f}')
+    if(dw < 1.5 or dw > 2.5):
+        print('Se rechaza la hipótesis nula, los residuales están correlacionados.')
+    else:
+        print('No se rechaza la hipótesis nula, no existe correlación entre los residuales.')
+
+```
+
+Evaluamos nuestro modelo:
+
+``` {python autocorrelation_test_aic}
+autocorrelation(model)
+```
+
+# 3. Pronóstico ARIMA sin usar rolling
 
 Repita el paso 2 ahora sin utilizar `rolling`. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción **7, 14, 21 y 28 días**.
 
-Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Es decir, este conjunto en nuestra nueva función ya no variará sino que será estático para cada una de las predicciones realizadas.
+Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Esto significa que este conjunto en nuestra nueva función ya no variará, sino que será estático para cada una de las predicciones realizadas.
 
-``` {python}
+``` {python arima_not_rolling}
 def arima_not_rolling(history: list, test: list, best_order: tuple) -> list:
     predictions: list = []
 
@@ -463,7 +590,7 @@ print('\nARIMA sin Rolling - Horizonte de 28 días')
 yhat28_nor: list = arima_rolling(train_list, test28, order)
 ```
 
-``` {python}
+``` {python arima_not_rolling_plots}
 ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
 sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
 sns.lineplot(x=dates_test7, y=yhat7_nor, label="Forecast", color='#c77dff')
@@ -493,12 +620,15 @@ plt.title("Horizonte de 28 días sin usar rolling")
 plt.show()
 ```
 
+<br>
+Observamos que al inicio de las líneas de pronóstico, los resultados son similares a los obtenidos al usar `rolling` para realizar nuestras predicciones. Esto se debe a que, como se mencionó anteriormente, en el método `rolling forecasting` también utilizamos los datos de test como datos históricos. Sin embargo, también podemos notar que a medida que transcurren los días, la gráfica sigue un comportamiento similar. Esto indica que el modelo ajustado con `rolling forecasting` no está explicando mejor los datos que cuando no usamos esta técnica de media móvil. Ahora que examinemos las métricas obtenidas de nuestros modelos, podremos confirmar si los resultados también son similares.
+
 # 4. Comparación entre modelos
 
 Realice tablas de error para los ítems 1 y 2, utilizando las métricas: `MAPE`, `MAE`, `RMSE`, `MSE`, `R2`. Además, agregue el gráfico de correlación entre la observación real y su predicción en el test, $\text{Corr}(y_{t}, \tilde{y}_{t})$
 
 Para obtener las métricas de los modelos obtenidos crearemos la siguiente función: 
-``` {python}
+``` {python forecast_accuracy}
 def forecast_accuracy(forecast: np.ndarray, actual: np.ndarray, str_name: str) -> pd.DataFrame:
     mape: float = np.mean(np.abs(forecast - actual) / np.abs(actual))
     mae: float = np.mean(np.abs(forecast - actual))
@@ -517,18 +647,18 @@ def forecast_accuracy(forecast: np.ndarray, actual: np.ndarray, str_name: str) -
     return df_acc
 ```
 
-Obtengamos inicialmente las métricas para el modelo usando `rolling`
+Comencemos obteniendo las métricas para el modelo utilizando `rolling`:
 
-``` {python}
+``` {python rolling_accuracy_aic}
 accuracy7: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7), "7 días")
 accuracy14: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14), "14 días")
 accuracy21: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21), "21 días")
 accuracy28: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28), "28 días")
 ```
 
-Ahora, obtengamos las métricas para el modelo obtenido sin usar `rolling`
+Ahora, obtendremos las métricas para el modelo sin utilizar `rolling`:
 
-``` {python}
+``` {python not_rolling_accuracy_aic}
 accuracy7_nor: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7_nor), "7 días no rolling")
 accuracy14_nor: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14_nor), "14 días no rolling")
 accuracy21_nor: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21_nor), "21 días no rolling")
@@ -539,16 +669,11 @@ accuracy: pd.DataFrame = pd.concat([accuracy7, accuracy14, accuracy21, accuracy2
 accuracy
 ```
 
-Las métricas obtenidas nos permiten interpretar los resultados de la siguiente forma:
+<br>
+Comparando los resultados entre el uso de `rolling` y `sin rolling` en las métricas de evaluación, se observa una diferencia significativa en todas las métricas. En general, los modelos con `rolling` tienden a tener un mejor desempeño en términos de error absoluto medio (MAE), error cuadrático medio (MSE), error porcentual absoluto medio (MAPE), raíz del error cuadrático medio (RMSE) y coeficiente de determinación (R2) en comparación con los modelos `sin rolling`. Esto sugiere que el uso de `rolling`, que implica la utilización de datos históricos en la ventana de tiempo de predicción, ayuda a capturar mejor las tendencias y patrones en los datos, lo que resulta en modelos más precisos y robustos para la predicción. Por otro lado, los modelos `sin rolling` pueden ser más susceptibles a fluctuaciones y variaciones en los datos, lo que se refleja en un rendimiento inferior en las métricas evaluadas.
 
-* **MAE (Error Absoluto Medio)**: Esta medida representa la media de las diferencias absolutas entre las predicciones y los valores reales. Por ejemplo, un MAE promedio de $1827.465$ indica un error absoluto promedio de $1827.465$ en las predicciones.
-* **MSE (Error Cuadrático Medio)**: Es la media de los cuadrados de las diferencias entre las predicciones y los valores reales. Valores altos como $4877469$ indican una dispersión significativa entre las predicciones y los valores reales.
-* **MAPE (Error Porcentual Absoluto Medio)**: Esta medida indica el promedio de los errores porcentuales absolutos en relación con los valores reales. Un MAPE promedio de $0.0266$ sugiere que las predicciones tienen un error porcentual promedio del $2.6%$.
-* **RMSE (Error Cuadrático Medio de la Raíz)**: Es la raíz cuadrada del `MSE` y proporciona una medida de la dispersión de los errores en la misma unidad que los datos originales. Un RMSE promedio de $2267.960$ indica que las predicciones se desvían aproximadamente $2267.960$ unidades de los valores reales.
-* **$\text{R}^2$ (Coeficiente de Determinación)**: Es una medida de qué tan bien el modelo se ajusta a los datos reales. Puede interpretarse como la proporción de la varianza total de los datos que es explicada por el modelo. Un valor de $\text{R}^2$ inferior a $0.5$ (50%) indica un ajuste deficiente del modelo. Además, para los horizontes de predicción mayores a 7 días, los coeficientes de determinación no superan el $0.15$ (15%), lo que sugiere un ajuste insuficiente para períodos de predicción más largos.
-
-``` {python}
-plt.rcParams.update({'figure.figsize': (9, 12)})
+``` {python correlation_plots}
+plt.rcParams.update({'figure.figsize': (9, 16)})
 
 fig: plt.Figure
 axes: np.ndarray
@@ -572,15 +697,24 @@ axes[3].plot(test28, test28, color='#c77dff', label='Correlación')
 axes[3].set_title('Horizonte 28 días', fontsize=12)
 ```
 
-# 5. Creiterio BIC y HQIC
+<br>
+Como se puede observar y teniendo en cuenta lo mencionado anteriormente, a medida que la ventana de predicciones aumenta, los valores obtenidos por las predicciones se ajustan mejor a los datos del test. Por lo tanto, si comparamos las predicciones realizadas con una ventana de **7 días** con las de **28 días**, notamos que la dispersión de los datos es menor con respecto a la línea de ajuste y que este ajuste cercano comienza mucho antes que en otros horizontes.
+
+# 5. Criterio BIC y HQIC
 
 Repita el análisis desarrollado en los pasos anteriores, considerando ahora el criterio de **inferencia Bayesiana** (`BIC`) y el criterio de **información de Hannan–Quinn** (`HQIC`) para encontrar el mejor modelo ARIMA y, compare los `errores` con aquellos obtenidos con el criterio de **Akaike**.
 
-Al igual que hicimos para el criterio **Akaike**, usaremos las funciones `get_model` y `arima_model` que definimos inicialmente para obtener los modelos. En este caso usaremos los criterios correspondientes a lo que queramos hallar
+Al igual que hicimos para el criterio de **Akaike**, utilizaremos las funciones `get_model` y `arima_model` que definimos inicialmente para obtener los modelos. En este caso, usaremos los criterios correspondientes a lo que queramos hallar.
 
 ## Criterio BIC
 
 ``` {python}
+#| echo: false
+order_akaike = order
+begin_t = time.time()
+```
+
+``` {python model_bic}
 order: tuple
 bic: float
 model: ARIMAResults
@@ -588,30 +722,34 @@ model: ARIMAResults
 order, bic, model = get_model("arima_model_bic.pkl", train, 'bic')
 ```
 
-``` {python}
+``` {python print_best_model_bic}
 #| echo: false
+end_t = time.time()
 print(f'Best model: ARIMA{order} | Best BIC: {bic}')
+print(f'Total fit time: {end_t - begin_t:.2f} sec')
 ```
+
+Basándonos en el resultado obtenido para el `mejor orden` y el valor del `mejor BIC`, podemos afirmar que el modelo que mejor se ajusta, de los realizados hasta ahora, sería el obtenido mediante el criterio de `Akaike`, Orden: `{python} order_akaike` y AIC: `{python} aic`.
 
 ### Modelo ajustado
 
 Teniendo en cuenta lo anterior, para la solución de este problema, consideraremos los mejores órdenes $p, d, q$ según el criterio de **inferencia Bayesiana**. Estos serán usados como argumento en nuestro modelo `ARIMA` junto con nuestro conjunto de entrenamiento para obtener el modelo ajustado de interés que utilizaremos para predecir valores futuros mediante el método `rolling`. 
 
-``` {python}
+``` {python fitted_model_bic}
 model_arima: ARIMA
 model_fit: ARIMAResults
 
 model_arima, model_fit = fitted_model(train, order)
 ```
 
-
-**AÑADIR CONCLUSIÓN DE LAS GRÁFICAS**
+<br>
+Al igual que para el modelo ajustado mediante el mejor orden obtenido por el criterio de Akaike, podemos observar que el rango del intervalo de confianza correspondiente a las predicciones es pequeño, lo que nos permite pensar que las predicciones se ajustan de manera correcta a los datos de entrenamiento.
 
 ### Pronóstico Continuo (Rolling Forecast)
 
 Ahora procederemos a realizar pronósticos utilizando el método de pronóstico continuo, también conocido como `rolling forecasting`. Este método utiliza datos históricos para predecir cifras futuras de forma continua a lo largo de un período de tiempo. Si se utiliza eficazmente, este método proporciona previsiones continuas que ayudan a identificar deficiencias de rendimiento, acortar ciclos de planificación y tomar decisiones más informadas para mejorar los resultados. En nuestro caso, implementaremos este enfoque de  `rolling forecasting` utilizando horizontes de 7, 14, 21 y 28 días. 
 
-``` {python}
+``` {python arima_rolling_bic}
 print('ARIMA Rolling - Horizonte de 7 días.')
 yhat7: list  = arima_rolling(train_list, test7, order)
 
@@ -625,7 +763,7 @@ print('\nARIMA Rolling - Horizonte de 28 días')
 yhat28: list = arima_rolling(train_list, test28, order)
 ```
 
-``` {python}
+``` {python arima_rolling_bic_plots}
 ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
 sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
 sns.lineplot(x=dates_test7, y=yhat7, label="Forecast", color='#c77dff')
@@ -655,13 +793,16 @@ plt.title("Horizonte de 28 días")
 plt.show()
 ```
 
+<br>
+Los resultados obtenidos de estos pronósticos son bastante similares a los que observamos anteriormente mediante el criterio `AIC`. Esto nos podría permitir afirmar que entre el criterio `AIC` y `BIC` no hay mucha diferencia en los resultados obtenidos para nuestra serie de tiempo.
+
 ### Modelo ARIMA sin usar rolling
 
 Repita el paso 2 ahora sin utilizar `rolling`. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción **7, 14, 21 y 28 días**.
 
 Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Es decir, este conjunto en nuestra nueva función ya no variará sino que será estático para cada una de las predicciones realizadas.
 
-``` {python}
+``` {python arima_not_rolling_bic}
 print('ARIMA sin Rolling - Horizonte de 7 días.')
 yhat7_nor: list  = arima_rolling(train_list, test7, order)
 
@@ -675,7 +816,7 @@ print('\nARIMA sin Rolling - Horizonte de 28 días')
 yhat28_nor: list = arima_rolling(train_list, test28, order)
 ```
 
-``` {python}
+``` {python arima_not_rolling_bic_plots}
 ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
 sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
 sns.lineplot(x=dates_test7, y=yhat7_nor, label="Forecast", color='#c77dff')
@@ -705,12 +846,14 @@ plt.title("Horizonte de 28 días sin usar rolling")
 plt.show()
 ```
 
+Similarmente, en el caso del criterio `AIC`, observamos que al inicio de las líneas de pronóstico, los resultados son similares a los obtenidos al usar rolling para realizar nuestras predicciones. Esto se debe a que, como se mencionó anteriormente, en el método rolling forecasting también utilizamos los datos de test como datos históricos. Sin embargo, también podemos notar que a medida que transcurren los días, la gráfica sigue un comportamiento similar. Esto indica que el modelo ajustado con rolling forecasting no está explicando mejor los datos que cuando no usamos esta técnica de media móvil. Ahora que examinemos las métricas obtenidas de nuestros modelos, podremos confirmar si los resultados también son similares.
+
 ### Comparación entre modelos
 Para obtener las métricas de los modelos generados usaremos la función `forest_accuracy` creada anteriormente. 
 
 Obtengamos inicialmente las métricas para el modelo usando `rolling`
 
-``` {python}
+``` {python rolling_accuracy_bic}
 accuracy7: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7), "7 días")
 accuracy14: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14), "14 días")
 accuracy21: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21), "21 días")
@@ -719,7 +862,7 @@ accuracy28: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28),
 
 Ahora, obtengamos las métricas para el modelo obtenido sin usar `rolling`
 
-``` {python}
+``` {python not_rolling_accuracy_bic}
 accuracy7_nor: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7_nor), "7 días no rolling")
 accuracy14_nor: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14_nor), "14 días no rolling")
 accuracy21_nor: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21_nor), "21 días no rolling")
@@ -730,16 +873,10 @@ accuracy: pd.DataFrame = pd.concat([accuracy7, accuracy14, accuracy21, accuracy2
 accuracy
 ```
 
-Las métricas obtenidas nos permiten interpretar los resultados de la siguiente forma:
+Los resultados obtenidos mediante el criterio de **Inferencia Bayesiana** (`BIC`) muestran una consistencia notable con los resultados anteriores obtenidos a través del criterio de **Akaike** (`AIC`). Ambos conjuntos de métricas presentan patrones similares en cuanto a la comparación entre modelos con y sin el uso de `rolling`. En general, los modelos con `rolling` tienden a ofrecer un rendimiento superior en todas las métricas evaluadas en comparación con los modelos `sin rolling`. Esto sugiere que, independientemente del criterio de selección del modelo utilizado, el enfoque de `rolling` parece ser beneficioso para la precisión de la predicción en este contexto particular. Además, se destaca que los valores de `MAE`, `MSE`, `MAPE`, `RMSE` y `R2` son consistentes entre los modelos con y `sin rolling` para cada intervalo de predicción, lo que indica que el enfoque de `rolling` no solo mejora la precisión, sino también la estabilidad de los modelos de predicción.
 
-* **MAE (Error Absoluto Medio)**: Esta medida representa la media de las diferencias absolutas entre las predicciones y los valores reales. Por ejemplo, un MAE promedio de $1827.465$ indica un error absoluto promedio de $1827.465$ en las predicciones.
-* **MSE (Error Cuadrático Medio)**: Es la media de los cuadrados de las diferencias entre las predicciones y los valores reales. Valores altos como $4877469$ indican una dispersión significativa entre las predicciones y los valores reales.
-* **MAPE (Error Porcentual Absoluto Medio)**: Esta medida indica el promedio de los errores porcentuales absolutos en relación con los valores reales. Un MAPE promedio de $0.0266$ sugiere que las predicciones tienen un error porcentual promedio del $2.6%$.
-* **RMSE (Error Cuadrático Medio de la Raíz)**: Es la raíz cuadrada del `MSE` y proporciona una medida de la dispersión de los errores en la misma unidad que los datos originales. Un RMSE promedio de $2267.960$ indica que las predicciones se desvían aproximadamente $2267.960$ unidades de los valores reales.
-* **$\text{R}^2$ (Coeficiente de Determinación)**: Es una medida de qué tan bien el modelo se ajusta a los datos reales. Puede interpretarse como la proporción de la varianza total de los datos que es explicada por el modelo. Un valor de $\text{R}^2$ inferior a $0.5$ (50%) indica un ajuste deficiente del modelo. Además, para los horizontes de predicción mayores a 7 días, los coeficientes de determinación no superan el $0.15$ (15%), lo que sugiere un ajuste insuficiente para períodos de predicción más largos.
-
-``` {python}
-plt.rcParams.update({'figure.figsize': (9, 12)})
+``` {python correlation_bic}
+plt.rcParams.update({'figure.figsize': (9, 16)})
 
 fig: plt.Figure
 axes: np.ndarray
@@ -763,10 +900,31 @@ axes[3].plot(test28, test28, color='#c77dff', label='Correlación')
 axes[3].set_title('Horizonte 28 días', fontsize=12)
 ```
 
+<br>
+Nuevamente, podemos observar que a medida que las ventanas de predicción aumentan, los valores predichos se ajustan más a la línea del test. Lo que reafirma la idea de que la técnica de las predicciones utilizando la media móvil (`rolling`) es efectiva para este tipo de modelos.
+
+### Análisis de los residuales 
+
+#### Test de normalidad
+
+``` {python normality_test_bic}
+normality(model)
+```
+
+#### Test de independencia
+
+``` {python autocorrelation_test_bic}
+autocorrelation(model)
+```
 
 ## Criterio HQIC
 
 ``` {python}
+#| echo: false
+begin_t = time.time()
+```
+
+``` {python model_hqic}
 order: tuple
 hqic: float
 model: ARIMAResults
@@ -774,176 +932,31 @@ model: ARIMAResults
 order, hqic, model = get_model("arima_model_hqic.pkl", train, 'hqic')
 ```
 
-``` {python}
+``` {python print_best_model_hqic}
 #| echo: false
+end_t = time.time()
 print(f'Best model: ARIMA{order} | Best HQIC: {hqic}')
+print(f'Total fit time: {end_t - begin_t:.2f} sec')
 ```
 
-### Modelo ajustado
+Notemos que el orden obtenido es el mismo que el obtenido para el criterio `BIC`. Por tanto, los resultados que se obtendrían si siguieramos con el análisis planteado anteriormente serían iguales.
 
-Teniendo en cuenta lo anterior, para la solución de este problema, consideraremos los mejores órdenes $p, d, q$ según el criterio de **inferencia Bayesiana**. Estos serán usados como argumento en nuestro modelo `ARIMA` junto con nuestro conjunto de entrenamiento para obtener el modelo ajustado de interés que utilizaremos para predecir valores futuros mediante el método `rolling`. 
+### Análisis de residuales
+
+#### Test de normalidad
 
 ``` {python}
-model_arima: ARIMA
-model_fit: ARIMAResults
-
-model_arima, model_fit = fitted_model(train, order)
+normality(model)
 ```
 
-**AÑADIR CONCLUSIÓN DE LAS GRÁFICAS**
-
-### Pronóstico Continuo (Rolling Forecast)
-
-Ahora procederemos a realizar pronósticos utilizando el método de pronóstico continuo, también conocido como `rolling forecasting`. Este método utiliza datos históricos para predecir cifras futuras de forma continua a lo largo de un período de tiempo. Si se utiliza eficazmente, este método proporciona previsiones continuas que ayudan a identificar deficiencias de rendimiento, acortar ciclos de planificación y tomar decisiones más informadas para mejorar los resultados. En nuestro caso, implementaremos este enfoque de  `rolling forecasting` utilizando horizontes de 7, 14, 21 y 28 días. 
+#### Test de independencia
 
 ``` {python}
-print('ARIMA Rolling - Horizonte de 7 días.')
-yhat7: list  = arima_rolling(train_list, test7, order)
-
-print('\nARIMA Rolling - Horizonte de 14 días.')
-yhat14: list  = arima_rolling(train_list, test14, order)
-
-print('\nARIMA Rolling - Horizonte de 21 días.')
-yhat21: list  = arima_rolling(train_list, test21, order)
-
-print('\nARIMA Rolling - Horizonte de 28 días')
-yhat28: list = arima_rolling(train_list, test28, order)
+autocorrelation(model)
 ```
 
-``` {python}
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test7, y=yhat7, label="Forecast", color='#c77dff')
+# Conclusiones
 
-plt.title("Horizonte de 7 días")
-plt.show()
+Aunque los resultados obtenidos mediante el criterio de **Akaike** (`AIC`) mostraron un mejor rendimiento en términos de ajuste del modelo en comparación con otros criterios como el **BIC** o el **HQIC**, aún así, los modelos no lograron ofrecer predicciones precisas. Las métricas evaluadas, como el coeficiente de determinación (`R2`), indican un ajuste insuficiente del modelo a los datos de la serie de tiempo. Además, las pruebas de normalidad de los residuos revelan que estos no siguen una distribución normal, lo que sugiere que los modelos no cumplen con los supuestos necesarios para realizar predicciones confiables.
 
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test14, y=yhat14, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 14 días")
-plt.show()
-
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test21, y=yhat21, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 21 días")
-plt.show()
-
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test28, y=yhat28, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 28 días")
-plt.show()
-```
-
-### Modelo ARIMA sin usar rolling
-
-Repita el paso 2 ahora sin utilizar `rolling`. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción **7, 14, 21 y 28 días**.
-
-Para realizar el pronóstico sin usar rolling lo único que debemos modificar de nuestra función anterior es eliminar la línea de código donde estamos guardando en el conjunto de datos `history` el valor observado del test. Es decir, este conjunto en nuestra nueva función ya no variará sino que será estático para cada una de las predicciones realizadas.
-
-``` {python}
-print('ARIMA sin Rolling - Horizonte de 7 días.')
-yhat7_nor: list  = arima_rolling(train_list, test7, order)
-
-print('\nARIMA sin Rolling - Horizonte de 14 días.')
-yhat14_nor: list  = arima_rolling(train_list, test14, order)
-
-print('\nARIMA sin Rolling - Horizonte de 21 días.')
-yhat21_nor: list  = arima_rolling(train_list, test21, order)
-
-print('\nARIMA sin Rolling - Horizonte de 28 días')
-yhat28_nor: list = arima_rolling(train_list, test28, order)
-```
-
-``` {python}
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test7, y=test7, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test7, y=yhat7_nor, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 7 días sin usar rolling")
-plt.show()
-
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test14, y=test14, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test14, y=yhat14_nor, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 14 días sin usar rolling")
-plt.show()
-
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test21, y=test21, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test21, y=yhat21_nor, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 21 días sin usar rolling")
-plt.show()
-
-ax: np.ndarray = sns.lineplot(x=dates_train[-60:], y=train[-60:], label="Train", color='#5a189a')
-sns.lineplot(x=dates_test28, y=test28, label="Test", color='#7b2cbf')
-sns.lineplot(x=dates_test28, y=yhat28_nor, label="Forecast", color='#c77dff')
-
-plt.title("Horizonte de 28 días sin usar rolling")
-plt.show()
-```
-
-### Comparación entre modelos
-Para obtener las métricas de los modelos generados usaremos la función `forest_accuracy` creada anteriormente. 
-
-Obtengamos inicialmente las métricas para el modelo usando `rolling`
-
-``` {python}
-accuracy7: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7), "7 días")
-accuracy14: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14), "14 días")
-accuracy21: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21), "21 días")
-accuracy28: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28), "28 días")
-```
-
-Ahora, obtengamos las métricas para el modelo obtenido sin usar `rolling`
-
-``` {python}
-accuracy7_nor: pd.DataFrame = forecast_accuracy(np.array(test7), np.array(yhat7_nor), "7 días no rolling")
-accuracy14_nor: pd.DataFrame = forecast_accuracy(np.array(test14), np.array(yhat14_nor), "14 días no rolling")
-accuracy21_nor: pd.DataFrame = forecast_accuracy(np.array(test21), np.array(yhat21_nor), "21 días no rolling")
-accuracy28_nor: pd.DataFrame = forecast_accuracy(np.array(test28), np.array(yhat28_nor), "28 días no rolling")
-
-accuracy: pd.DataFrame = pd.concat([accuracy7, accuracy14, accuracy21, accuracy28, accuracy7_nor, accuracy14_nor, accuracy21_nor, accuracy28_nor])
-
-accuracy
-```
-
-Las métricas obtenidas nos permiten interpretar los resultados de la siguiente forma:
-
-* **MAE (Error Absoluto Medio)**: Esta medida representa la media de las diferencias absolutas entre las predicciones y los valores reales. Por ejemplo, un MAE promedio de $1827.465$ indica un error absoluto promedio de $1827.465$ en las predicciones.
-* **MSE (Error Cuadrático Medio)**: Es la media de los cuadrados de las diferencias entre las predicciones y los valores reales. Valores altos como $4877469$ indican una dispersión significativa entre las predicciones y los valores reales.
-* **MAPE (Error Porcentual Absoluto Medio)**: Esta medida indica el promedio de los errores porcentuales absolutos en relación con los valores reales. Un MAPE promedio de $0.0266$ sugiere que las predicciones tienen un error porcentual promedio del $2.6%$.
-* **RMSE (Error Cuadrático Medio de la Raíz)**: Es la raíz cuadrada del `MSE` y proporciona una medida de la dispersión de los errores en la misma unidad que los datos originales. Un RMSE promedio de $2267.960$ indica que las predicciones se desvían aproximadamente $2267.960$ unidades de los valores reales.
-* **$\text{R}^2$ (Coeficiente de Determinación)**: Es una medida de qué tan bien el modelo se ajusta a los datos reales. Puede interpretarse como la proporción de la varianza total de los datos que es explicada por el modelo. Un valor de $\text{R}^2$ inferior a $0.5$ (50%) indica un ajuste deficiente del modelo. Además, para los horizontes de predicción mayores a 7 días, los coeficientes de determinación no superan el $0.15$ (15%), lo que sugiere un ajuste insuficiente para períodos de predicción más largos.
-
-``` {python}
-plt.rcParams.update({'figure.figsize': (9, 12)})
-
-fig: plt.Figure
-axes: np.ndarray
-
-fig, axes = plt.subplots(4)
-
-sns.scatterplot(x=test7, y=yhat7, ax=axes[0], color='#5a189a', label='Real vs Estimado')
-axes[0].plot(test7, test7, color='#c77dff', label='Correlación')
-axes[0].set_title('Horizonte 7 días', fontsize=12)
-
-sns.scatterplot(x=test14, y=yhat14, ax=axes[1], color='#5a189a', label='Real vs Estimado')
-axes[1].plot(test14, test14, color='#c77dff', label='Correlación')
-axes[1].set_title('Horizonte 14 días', fontsize=12)
-
-sns.scatterplot(x=test21, y=yhat21, ax=axes[2], color='#5a189a', label='Real vs Estimado')
-axes[2].plot(test21, test21, color='#c77dff', label='Correlación')
-axes[2].set_title('Horizonte 21 días', fontsize=12)
-
-sns.scatterplot(x=test28, y=yhat28, ax=axes[3], color='#5a189a', label='Real vs Estimado')
-axes[3].plot(test28, test28, color='#c77dff', label='Correlación')
-axes[3].set_title('Horizonte 28 días', fontsize=12)
-```
+Ante esta situación, es necesario explorar otros modelos estadísticos para series de tiempo, como el **SARIMA** (Seasonal Autoregressive Integrated Moving Average), que considera la estacionalidad de los datos. También se pueden investigar modelos más avanzados, como los modelos de **aprendizaje automático**, que pueden capturar mejor la complejidad de la serie temporal y ofrecer predicciones más precisas. En resumen, es crucial seguir explorando y experimentando con diferentes enfoques para encontrar el modelo que mejor se ajuste a los datos y produzca predicciones confiables.

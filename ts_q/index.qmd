@@ -2,4 +2,18 @@
 title: "Series de tiempo"
 ---
 
-Un proceso estocástico es una colección o familia de variables aleatorias $\{X_{t}\}_{t\in I}$ ordenadas según el subíndice $t$ que en general se suele identificar con el tiempo. Llamamos trayectoria del proceso a una realización del proceso estocástico. Si $I$ es discreto, el proceso es en tiempo discreto. Si $I$ es continuo, el proceso es en tiempo continuo.
+Una serie temporal es una realización parcial de un proceso estocástico de parámetro tiempo discreto, donde los elementos de $I$ están ordenados y corresponden a instantes equidistantes del tiempo. Estos procesos estocásticos son colecciones o familias de variables aleatorias $\{X_{t}\}_{t\in I}$ ordenadas según el subíndice $t$ que en general se suele identificar con el tiempo. Llamamos trayectoria del proceso a una realización del proceso estocástico. Si $I$ es discreto, el proceso es en tiempo discreto. Si $I$ es continuo, el proceso es en tiempo continuo. Entre las series de tiempo, existen modelos estadísticos que definen el proceso de cualquier conjunto de hipótesis bien definidas sobre las propeidades estadísticas de dicho proceso estocástico. 
+
+Uno de los modelos más utilizados a la hora de realizar pronósticos de series de tiempo es el modelo `ARIMA`. Estos modelos `ARIMA` (Autorregresivos Integrados de Media Móvil) aproximan los valores futuros de una serie temporal como una función lineal de observaciones pasadas y términos de ruido blanco. Una serie de tiempo $y_t$ se llama un proceso de media móvil integrada autorregresiva (`ARIMA`) de órdenes $p, d, q$, denotado ARIMA($p, d, q$) si su diferencia $d$ da lugar a un proceso estacionario ARMA($p, q$). Por lo tanto, un ARIMA($p, d, q$) puede escribirse como
+
+$$
+    \Phi(B)(1 - B)^{d} y_{t} = \delta + \Theta(B) \varepsilon_{t}
+$$
+
+donde
+
+$$
+    \Phi(B) = 1 - \sum_{i = 1}^{p} \phi_{i} B^{i} \quad \text{y} \quad \Theta(B) = 1 - \sum_{i = 1}^{q} \theta_{i} B^{i},
+$$
+
+son los términos del operador back-shit en los AR($p$) y MA($q$) definidos como $\Phi(B) y_{t} = \delta + \varepsilon_{t}$ y $y_{t} = \mu + \Theta(B) \varepsilon_{t}$ con $\delta = \mu - \phi \mu$, donde $\mu$ es la media y $\varepsilon_{t}$ el ruido blanco con $E(\varepsilon_t) = 0$ [@rubio2024].

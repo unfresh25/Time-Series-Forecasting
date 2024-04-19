@@ -3,3 +3,5 @@ ts_env/
 ts_q/_site/
 ts_q/.quarto/
 ts_q/icon/
+
+ts_jb/_build/

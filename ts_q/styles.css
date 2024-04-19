@@ -65,6 +65,10 @@
     opacity: 0;
   }
 
+  .toc-title {
+    font-size: 15px !important;
+  }
+
   p > code, h2 > code, h3 > code {
     background-color: #212121 !important;
     color: #dd9ec2 !important;
