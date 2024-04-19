@@ -25,10 +25,12 @@ website:
     - contents: 
       - href: index.qmd
         text: Introducción
-      - section: "Predicción Series de Tiempo - Python" 
-        contents:
-          text: "Predicción Series de Tiempo - Python"
-          href: ts_python.qmd
+      - href: ts_python.qmd
+        text: "Predicción Series de Tiempo - Python"
+      - href: ts_r.qmd
+        text: "Predicción Series de Tiempo - R"
+        
+
 
 format:
   html:
