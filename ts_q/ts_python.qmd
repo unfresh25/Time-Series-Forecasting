@@ -75,9 +75,9 @@ stock_data = stock_data.reset_index()
 
 ``` {python}
 #| echo: false
-stock_data = stock_data.iloc[:-2]
+stock_data = stock_data.iloc[:-6]
 
-stock_data.head()
+stock_data.tail()
 ```
 
 # 2. Modelo ARIMA usando rolling forecasting
@@ -92,6 +92,7 @@ sns.lineplot(data=stock_data, x=stock_data.Date, y=stock_data.Close);
 ``` {python candlestick}
 #| fig-cap: 'Candlestick del stock BTC-USD.'
 #| fig-cap-location: bottom
+#| output: false
 pio.renderers.default = "notebook"
 fig: go.Figure = go.Figure(data=[
     go.Candlestick(
@@ -116,6 +117,22 @@ fig.update_layout(
 fig.update_layout(xaxis_rangeslider_visible=False)
 fig
 ```
+
+``` {python}
+#| echo: false
+fig.write_html('candlestick.html')
+```
+
+``` {=html}
+<iframe
+    src = 'candlestick.html'
+    width = '720'
+    height = '500'
+    title = 'Bitcoin (BTC-USD)'
+>
+</iframe>
+```
+
 
 Con estas gráficas se observan dos momentos significativos: un pico inicial alrededor de 2017 y otro más pronunciado que comienza cerca de 2020 y sigue ascendiendo hasta el final del período mostrado. Entre estos dos picos, hay una caída notable después del primer pico y una estabilización antes del segundo aumento.
 

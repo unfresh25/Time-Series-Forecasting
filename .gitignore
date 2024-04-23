@@ -5,3 +5,5 @@ ts_q/.quarto/
 ts_q/icon/
 
 ts_jb/_build/
+
+*.csv
